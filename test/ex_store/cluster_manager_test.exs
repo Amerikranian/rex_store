@@ -1,9 +1,8 @@
-defmodule ExStore.ClusterRingTest do
+defmodule ExStore.ClusterManagerTest do
   use ExUnit.Case
   doctest ExStore.ClusterManager
 
   alias ExStore.ClusterManager
-  alias ExStore.TestCluster
 
   describe "single node environment" do
     test "local ring maps keys to the current node" do

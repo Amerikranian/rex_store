@@ -207,6 +207,12 @@ defmodule ExStore.Consistency.EventualController do
     Process.send_after(self(), :gossip, @gossip_interval)
   end
 
+  # send out a metadata request
+  # handle metadata request
+  # compare metadatas
+  # send replicate call if they are not up to date
+  # if i am not up to date then update
+
   defp perform_anti_entropy_gossip(state) do
     # Implementation of anti-entropy gossip
     # 1. Select a random node from the cluster
@@ -225,8 +231,7 @@ defmodule ExStore.Consistency.EventualController do
       target_node = Enum.random(nodes)
       Logger.debug("Gossiping with node: #{target_node}")
 
-      # In a real implementation, we'd send a subset of our keys to compare
-      # For simplicity, we'll skip the actual implementation here
+      
     end
 
     state

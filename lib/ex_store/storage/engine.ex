@@ -87,4 +87,10 @@ defmodule ExStore.Storage.Engine do
 
     {:reply, {:ok, keys}, state}
   end
+
+  @impl true
+  def handle_call({:get_metadata}, _from, %{store: store} = state) do
+    map_list = Map.to_list(store)
+    {:reply, {map_list}, state}
+  end
 end

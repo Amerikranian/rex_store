@@ -212,6 +212,12 @@ defmodule ExStore.Consistency.EventualController do
   # compare metadatas
   # send replicate call if they are not up to date
   # if i am not up to date then update
+  @impl GenServer
+  def handle_call({:metadata_request}, _from, state) do
+    map_list = ExStore.Storage.Engine.get_metadata()
+    {:ok, {map_list}, state}
+    end
+  end
 
   defp perform_anti_entropy_gossip(state) do
     # Implementation of anti-entropy gossip
@@ -231,7 +237,33 @@ defmodule ExStore.Consistency.EventualController do
       target_node = Enum.random(nodes)
       Logger.debug("Gossiping with node: #{target_node}")
 
-      
+      # get the state of the target node
+      map_list = GenServer.call(
+        {__MODULE__, target_node},
+        {:request_metadata})
+
+      # check and handle conflicts
+      case map_list do
+        # target node has nothing in kv store
+        [] ->
+          case ExStore.Storage.Engine.get_metadata() do
+            [] -> # both empty, do nothing
+            self_list ->
+              for {key, {value, metadata}} <- self_list do
+                GenServer.cast(
+                  {__MODULE__, target_node},
+                  {:replicate, key, value, metadata}
+                )
+              end
+          end
+
+        # target node kv store not empty, need to compare
+        _ ->
+          # TODO: compare and handle.
+
+      end
+
+
     end
 
     state

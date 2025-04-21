@@ -200,12 +200,12 @@ impl GossipTcpClient {
     }
 
     // Check if peer is alive
-    pub async fn ping(&self, sender: String) -> Result<bool> {
+    pub async fn ping(&self) -> Result<bool> {
         if let Err(_) = self.ensure_connected().await {
             return Ok(false);
         }
 
-        let ping = GossipMessage::Ping { sender };
+        let ping = GossipMessage::Ping;
         match self.send_gossip(ping).await {
             Ok(_) => Ok(true),
             Err(_) => {
@@ -351,16 +351,12 @@ async fn process_command(
             },
         },
 
-        GossipCommand::Set {
-            key,
-            value,
-            node_id,
-        } => {
+        GossipCommand::Set { key, value } => {
             match kvstore
                 .send(Set {
                     key: key.clone(),
                     value: value.clone(),
-                    node_id: node_id.clone(),
+                    node_id: config.node_id.clone(),
                 })
                 .await
             {
@@ -471,7 +467,6 @@ mod tests {
         let command = GossipCommand::Set {
             key: "test-set-key".to_string(),
             value: "test-set-value".to_string(),
-            node_id: "test-node".to_string(),
         };
 
         let response = process_command(command, &kvstore, &gossip, &config).await;
@@ -555,9 +550,7 @@ mod tests {
         let config = create_test_config("test-node", 8000, peers);
         let gossip = GossipActor::new(config.clone(), kvstore.clone()).start();
 
-        let ping_msg = GossipMessage::Ping {
-            sender: "127.0.0.1:9000".to_string(),
-        };
+        let ping_msg = GossipMessage::Ping;
         let command = GossipCommand::Gossip(ping_msg);
 
         let response = process_command(command, &kvstore, &gossip, &config).await;
@@ -598,11 +591,7 @@ mod tests {
         let response = process_command(command, &kvstore, &gossip, &config).await;
 
         match response {
-            GossipResponse::Ok(Some(GossipResponseData::GossipMessage(GossipMessage::Ping {
-                sender,
-            }))) => {
-                assert_eq!(sender, "127.0.0.1:8000");
-            }
+            GossipResponse::Ok(Some(GossipResponseData::GossipMessage(GossipMessage::Ping))) => (),
             _ => panic!("Unexpected response: {:?}", response),
         }
 
@@ -670,12 +659,11 @@ mod tests {
         let set_command = GossipCommand::Set {
             key: "client-key".to_string(),
             value: "client-value".to_string(),
-            node_id: "client-node".to_string(),
         };
         let response = client.send_command(set_command).await;
         assert!(response.is_ok());
 
-        let ping_result = client.ping("client".to_string()).await;
+        let ping_result = client.ping().await;
         assert!(ping_result.is_ok());
         assert!(ping_result.unwrap());
 
@@ -683,7 +671,7 @@ mod tests {
 
         sleep(Duration::from_millis(500)).await;
 
-        let ping_result = client.ping("client".to_string()).await;
+        let ping_result = client.ping().await;
         println!("Ping result after shutdown: {:?}", ping_result);
 
         assert!(ping_result.is_ok());
@@ -696,7 +684,7 @@ mod tests {
 
         let client = GossipTcpClient::new(format!("127.0.0.1:{}", UNUSED_PORT));
 
-        let ping_result = client.ping("client".to_string()).await;
+        let ping_result = client.ping().await;
         assert!(ping_result.is_ok());
         assert!(!ping_result.unwrap());
 
@@ -739,7 +727,6 @@ mod tests {
         let set_command1 = GossipCommand::Set {
             key: "client1-key".to_string(),
             value: "client1-value".to_string(),
-            node_id: "client1".to_string(),
         };
         let response1 = client1.send_command(set_command1).await;
         assert!(response1.is_ok());
@@ -747,7 +734,6 @@ mod tests {
         let set_command2 = GossipCommand::Set {
             key: "client2-key".to_string(),
             value: "client2-value".to_string(),
-            node_id: "client2".to_string(),
         };
         let response2 = client2.send_command(set_command2).await;
         assert!(response2.is_ok());
@@ -755,7 +741,6 @@ mod tests {
         let set_command3 = GossipCommand::Set {
             key: "client3-key".to_string(),
             value: "client3-value".to_string(),
-            node_id: "client3".to_string(),
         };
         let response3 = client3.send_command(set_command3).await;
         assert!(response3.is_ok());
@@ -823,7 +808,6 @@ mod tests {
         let set_command = GossipCommand::Set {
             key: "reconnect-key".to_string(),
             value: "initial-value".to_string(),
-            node_id: "client".to_string(),
         };
         let response = client.send_command(set_command).await;
         assert!(response.is_ok());
@@ -832,7 +816,7 @@ mod tests {
         sleep(Duration::from_millis(500)).await;
 
         // Verify client detects the server is down
-        let ping_result = client.ping("client".to_string()).await;
+        let ping_result = client.ping().await;
         assert!(ping_result.is_ok());
         assert!(!ping_result.unwrap());
 
@@ -870,7 +854,7 @@ mod tests {
         sleep(Duration::from_millis(500)).await;
 
         // Client should reconnect to the new server
-        let ping_result = client.ping("client".to_string()).await;
+        let ping_result = client.ping().await;
         assert!(ping_result.is_ok());
         assert!(ping_result.unwrap());
 

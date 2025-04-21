@@ -159,25 +159,17 @@ fn parse_interactive_command(
             Ok((json!({"Get": {"key": parts[1]}}), target_server))
         }
         "set" => {
-            if parts.len() < 4 {
-                return Err(anyhow!("Usage: set <key> <value> <node_id>"));
+            if parts.len() < 3 {
+                return Err(anyhow!("Usage: set <key> <value>"));
             }
             Ok((
-                json!({"Set": {"key": parts[1], "value": parts[2], "node_id": parts[3]}}),
+                json!({"Set": {"key": parts[1], "value": parts[2]}}),
                 target_server,
             ))
         }
         "peers" => Ok((json!("GetPeers"), target_server)),
         "health" => Ok((json!("Health"), target_server)),
-        "ping" => {
-            if parts.len() < 2 {
-                return Err(anyhow!("Usage: ping <sender>"));
-            }
-            Ok((
-                json!({"Gossip": {"Ping": {"sender": parts[1]}}}),
-                target_server,
-            ))
-        }
+        "ping" => Ok((json!({"Gossip": {"Ping": null}}), target_server)),
         "alias" => {
             if parts.len() == 1 {
                 // Special case to just show alias help
@@ -220,10 +212,10 @@ fn parse_interactive_command(
         "help" => {
             println!("Available commands:");
             println!("  get <key> [@server]                - Get a value");
-            println!("  set <key> <value> <node_id> [@server] - Set a value");
+            println!("  set <key> <value> [@server] - Set a value");
             println!("  peers [@server]                    - Get active peers");
             println!("  health [@server]                   - Health check");
-            println!("  ping <sender> [@server]            - Ping a node");
+            println!("  ping [@server]            - Ping a node");
             println!("  connect <server>                   - Connect to a new server");
             println!("  alias list                         - List all server aliases");
             println!("  alias add <name> <addr>            - Add a server alias");

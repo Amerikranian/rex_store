@@ -19,9 +19,7 @@ pub enum GossipMessage {
     },
 
     // Ping message for cluster membership
-    Ping {
-        sender: String,
-    },
+    Ping,
 
     // Pong response to a ping
     Pong {
@@ -30,21 +28,15 @@ pub enum GossipMessage {
     },
 }
 
-// New command enum for TCP protocol
+// Command enum for TCP protocol
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum GossipCommand {
     // Gossip protocol commands
     Gossip(GossipMessage),
 
     // KV store commands
-    Get {
-        key: String,
-    },
-    Set {
-        key: String,
-        value: String,
-        node_id: String,
-    },
+    Get { key: String },
+    Set { key: String, value: String },
 
     // Cluster management commands
     GetPeers,

@@ -130,11 +130,9 @@ impl GossipActor {
     fn check_inactive_peers(&mut self, ctx: &mut Context<Self>) {
         let inactive_peers: Vec<String> = self.inactive_peers.iter().cloned().collect();
         let addr = ctx.address();
-        let config = self.config.clone();
 
         let mut peers_to_try = Vec::new();
         let mut client_futures = Vec::new();
-        let endpoint = config.endpoint();
 
         for peer in &inactive_peers {
             if self.should_attempt_inactive_peer(peer) {
@@ -143,10 +141,9 @@ impl GossipActor {
 
                 let client = self.get_client(peer).clone();
                 let peer_clone = peer.clone();
-                let endpoint_clone = endpoint.clone();
 
                 client_futures.push(async move {
-                    let result = client.ping(endpoint_clone).await;
+                    let result = client.ping().await;
                     (peer_clone, result)
                 });
             }
@@ -177,19 +174,16 @@ impl GossipActor {
     fn ping_peers(&mut self, ctx: &mut Context<Self>) {
         let active_peers: Vec<String> = self.active_peers.iter().cloned().collect();
         let addr = ctx.address();
-        let config = self.config.clone();
 
         if !active_peers.is_empty() {
             let mut client_futures = Vec::new();
-            let endpoint = config.endpoint();
 
             for peer in &active_peers {
                 let client = self.get_client(peer).clone();
                 let peer_clone = peer.clone();
-                let endpoint_clone = endpoint.clone();
 
                 client_futures.push(async move {
-                    let result = client.ping(endpoint_clone).await;
+                    let result = client.ping().await;
                     (peer_clone, result)
                 });
             }
@@ -270,9 +264,7 @@ impl Handler<ProcessGossip> for GossipActor {
                             let _ = kvstore.send(Update { key, value }).await;
                         }
 
-                        Ok(GossipMessage::Ping {
-                            sender: config.endpoint(),
-                        })
+                        Ok(GossipMessage::Ping)
                     }
 
                     GossipMessage::SyncRequest => {
@@ -289,12 +281,10 @@ impl Handler<ProcessGossip> for GossipActor {
                             let _ = kvstore.send(Update { key, value }).await;
                         }
 
-                        Ok(GossipMessage::Ping {
-                            sender: config.endpoint(),
-                        })
+                        Ok(GossipMessage::Ping)
                     }
 
-                    GossipMessage::Ping { sender: _ } => Ok(GossipMessage::Pong {
+                    GossipMessage::Ping => Ok(GossipMessage::Pong {
                         sender: config.endpoint(),
                         members: active_peers,
                     }),
@@ -307,9 +297,7 @@ impl Handler<ProcessGossip> for GossipActor {
                         // This would ideally be handled in a cleaner way, perhaps
                         // through a PeerDiscovery message
 
-                        Ok(GossipMessage::Ping {
-                            sender: config.endpoint(),
-                        })
+                        Ok(GossipMessage::Ping)
                     }
                 }
             }
@@ -515,9 +503,7 @@ mod tests {
             .unwrap();
 
         match result {
-            Ok(GossipMessage::Ping { sender }) => {
-                assert_eq!(sender, "127.0.0.1:8000");
-            }
+            Ok(GossipMessage::Ping) => (),
             _ => panic!("Expected Ping message"),
         }
 
@@ -624,9 +610,7 @@ mod tests {
             .unwrap();
 
         match result {
-            Ok(GossipMessage::Ping { sender }) => {
-                assert_eq!(sender, "127.0.0.1:8000");
-            }
+            Ok(GossipMessage::Ping) => (),
             _ => panic!("Expected Ping message"),
         }
 
@@ -656,9 +640,7 @@ mod tests {
 
         let gossip = GossipActor::new(config.clone(), kvstore).start();
 
-        let ping_msg = GossipMessage::Ping {
-            sender: "127.0.0.1:9000".to_string(),
-        };
+        let ping_msg = GossipMessage::Ping;
 
         let result = gossip
             .send(ProcessGossip { message: ping_msg })
@@ -686,9 +668,7 @@ mod tests {
             .unwrap();
 
         match result {
-            Ok(GossipMessage::Ping { sender }) => {
-                assert_eq!(sender, "127.0.0.1:8000");
-            }
+            Ok(GossipMessage::Ping) => (),
             _ => panic!("Expected Ping message"),
         }
     }

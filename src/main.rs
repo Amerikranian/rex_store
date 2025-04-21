@@ -1,6 +1,7 @@
 use actix::Actor;
 use anyhow::Result;
 use clap::Parser;
+use tokio::signal;
 
 mod config;
 mod gossip;
@@ -34,6 +35,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let mut join_handles = Vec::new();
+    let mut shutdown_handles = Vec::new();
 
     for i in 0..args.num_nodes {
         let port = args.base_port + i;
@@ -48,18 +50,18 @@ async fn main() -> Result<()> {
                 .collect(),
         };
 
-        // Create KVStore actor
         let kvstore = KVStoreActor::new();
         let kvstore_addr = kvstore.start();
 
-        // Create Gossip actor with a reference to KVStore
         let gossip = GossipActor::new(config.clone(), kvstore_addr.clone());
         let gossip_addr = gossip.start();
 
-        // Create the network server
         let server = NetworkServer::new(config.clone(), kvstore_addr.clone(), gossip_addr.clone());
 
-        // Run the network server
+        if let Some(shutdown_handle) = server.get_shutdown_handle() {
+            shutdown_handles.push(shutdown_handle);
+        }
+
         let server_handle = actix_web::rt::spawn(async move {
             if let Err(e) = server.run().await {
                 tracing::error!("Network server error: {:?}", e);
@@ -69,7 +71,21 @@ async fn main() -> Result<()> {
         join_handles.push(server_handle);
     }
 
-    // Wait for all servers to complete
+    tokio::spawn(async move {
+        match signal::ctrl_c().await {
+            Ok(()) => {
+                tracing::info!("CTRL+C received, initiating graceful shutdown");
+
+                for handle in shutdown_handles {
+                    let _ = handle.send(());
+                }
+            }
+            Err(err) => {
+                tracing::error!("Error listening for CTRL+C: {:?}", err);
+            }
+        }
+    });
+
     for handle in join_handles {
         let _ = handle.await;
     }

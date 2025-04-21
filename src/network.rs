@@ -53,14 +53,4 @@ impl NetworkServer {
 
         tcp_server.run().await
     }
-
-    // Initiate shutdown
-    pub fn shutdown(&self) -> Result<()> {
-        if let Some(sender) = &self.shutdown_sender {
-            let _ = sender.send(());
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("Shutdown sender not available"))
-        }
-    }
 }

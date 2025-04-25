@@ -1,4 +1,5 @@
 use crate::kvstore::VersionedValue;
+use crate::vector_clock::VectorClock;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,39 @@ pub enum GossipMessage {
         sender: String,
         members: Vec<String>,
     },
+
+    // Quorum-based operations
+    QuorumRead {
+        key: String,
+        request_id: String,
+    },
+
+    QuorumReadResponse {
+        key: String,
+        value: Option<VersionedValue>,
+        request_id: String,
+        node_id: String,
+    },
+
+    QuorumWrite {
+        key: String,
+        value: VersionedValue,
+        request_id: String,
+    },
+
+    QuorumWriteResponse {
+        key: String,
+        success: bool,
+        value: Option<VersionedValue>,
+        request_id: String,
+        node_id: String,
+    },
+
+    // For conflict resolution
+    ConflictResolution {
+        key: String,
+        resolved_value: VersionedValue,
+    },
 }
 
 // Command enum for TCP protocol
@@ -38,9 +72,12 @@ pub enum GossipCommand {
     Get { key: String },
     Set { key: String, value: String },
 
+    // Quorum-based commands
+    QuorumGet { key: String },
+    QuorumSet { key: String, value: String },
+
     // Cluster management commands
     GetPeers,
-    Health,
 }
 
 // Response types for the TCP protocol
@@ -61,11 +98,31 @@ pub enum GossipResponseData {
         key: String,
         value: Option<String>,
         found: bool,
+        vector_clock: Option<VectorClock>,
     },
+
     SetResult {
         key: String,
         value: String,
-        timestamp: u128,
+        vector_clock: VectorClock,
+    },
+
+    // Quorum response types
+    QuorumReadResult {
+        key: String,
+        value: Option<String>,
+        found: bool,
+        successful_nodes: Vec<String>,
+        failed_nodes: Vec<String>,
+        vector_clock: Option<VectorClock>,
+    },
+
+    QuorumWriteResult {
+        key: String,
+        value: String,
+        successful_nodes: Vec<String>,
+        failed_nodes: Vec<String>,
+        vector_clock: VectorClock,
     },
 
     // Gossip protocol responses
@@ -75,6 +132,12 @@ pub enum GossipResponseData {
     PeerList {
         peers: Vec<String>,
     },
+
+    ReplicaList {
+        key: String,
+        replicas: Vec<String>,
+    },
+
     HealthInfo {
         status: String,
         node_id: String,

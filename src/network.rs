@@ -18,7 +18,6 @@ pub struct NetworkServer {
 
 impl NetworkServer {
     pub fn new(config: Config, kvstore: Addr<KVStoreActor>, gossip: Addr<GossipActor>) -> Self {
-        // Create a shutdown channel
         let (shutdown_sender, shutdown_receiver) = create_shutdown_channel();
 
         Self {
@@ -44,12 +43,22 @@ impl NetworkServer {
             self.shutdown_receiver.take(), // Pass ownership of the receiver
         );
 
-        // Clone these values for logging
         let host = self.config.host.clone();
         let port = self.config.port;
         let node_id = self.config.node_id.clone();
+        let replication_factor = self.config.replication_factor;
+        let read_quorum = self.config.read_quorum;
+        let write_quorum = self.config.write_quorum;
 
-        tracing::info!("Starting node {} on {}:{}", node_id, host, port);
+        tracing::info!(
+            "Starting node {} on {}:{} with N={}, R={}, W={}",
+            node_id,
+            host,
+            port,
+            replication_factor,
+            read_quorum,
+            write_quorum
+        );
 
         tcp_server.run().await
     }

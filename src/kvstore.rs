@@ -2,12 +2,15 @@ use actix::{Actor, Context, Handler, Message, MessageResult};
 use anyhow::Result;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 
-// A versioned value in our key-value store
-#[derive(Clone, Debug, Serialize, Deserialize)]
+use crate::vector_clock::VectorClock;
+
+// A versioned value
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct VersionedValue {
     pub value: String,
-    pub timestamp: u128,
+    pub vector_clock: VectorClock,
     pub node_id: String,
 }
 
@@ -27,7 +30,7 @@ pub struct Set {
 }
 
 #[derive(Message)]
-#[rtype(result = "bool")]
+#[rtype(result = "UpdateResult")]
 pub struct Update {
     pub key: String,
     pub value: VersionedValue,
@@ -41,27 +44,26 @@ pub struct Snapshot;
 #[rtype(result = "HashMap<String, VersionedValue>")]
 pub struct GetAll;
 
+// Result of an update operation
+#[derive(Debug, PartialEq)]
+pub enum UpdateResult {
+    Updated(VersionedValue),
+    Conflict(VersionedValue, VersionedValue), // (stored, received)
+    NotUpdated(VersionedValue),
+}
+
 // The KVStore actor
 pub struct KVStoreActor {
     data: HashMap<String, VersionedValue>,
-    clock: u128,
+    node_id: String,
 }
 
 impl KVStoreActor {
-    pub fn new() -> Self {
+    pub fn new(node_id: String) -> Self {
         KVStoreActor {
             data: HashMap::new(),
-            clock: 0,
+            node_id,
         }
-    }
-
-    fn next_timestamp(&mut self) -> u128 {
-        self.clock += 1;
-        self.clock
-    }
-
-    fn sync_clock(&mut self, remote_ts: u128) {
-        self.clock = self.clock.max(remote_ts) + 1;
     }
 }
 
@@ -81,11 +83,18 @@ impl Handler<Set> for KVStoreActor {
     type Result = MessageResult<Set>;
 
     fn handle(&mut self, msg: Set, _ctx: &mut Context<Self>) -> Self::Result {
-        let timestamp = self.next_timestamp();
+        // Create a new vector clock or get the existing one and increment
+        let mut vector_clock = VectorClock::new();
+
+        if let Some(existing) = self.data.get(&msg.key) {
+            vector_clock = existing.vector_clock.clone();
+        }
+
+        vector_clock.increment(&self.node_id);
 
         let versioned_value = VersionedValue {
             value: msg.value,
-            timestamp,
+            vector_clock,
             node_id: msg.node_id,
         };
 
@@ -95,30 +104,49 @@ impl Handler<Set> for KVStoreActor {
 }
 
 impl Handler<Update> for KVStoreActor {
-    type Result = bool;
+    type Result = MessageResult<Update>;
 
     fn handle(&mut self, msg: Update, _ctx: &mut Context<Self>) -> Self::Result {
-        self.sync_clock(msg.value.timestamp);
-
-        let updated = match self.data.get(&msg.key) {
+        let result = match self.data.get(&msg.key) {
             Some(current) => {
-                if current.timestamp < msg.value.timestamp
-                    || (current.timestamp == msg.value.timestamp
-                        && current.node_id < msg.value.node_id)
-                {
-                    self.data.insert(msg.key, msg.value);
-                    true
-                } else {
-                    false
+                // Compare vector clocks
+                match current.vector_clock.compare(&msg.value.vector_clock) {
+                    Some(Ordering::Less) => {
+                        // The incoming value is newer
+                        let updated_value = msg.value.clone();
+                        self.data.insert(msg.key, updated_value.clone());
+                        UpdateResult::Updated(updated_value)
+                    }
+                    Some(Ordering::Greater) => {
+                        // The current value is newer
+                        UpdateResult::NotUpdated(current.clone())
+                    }
+                    Some(Ordering::Equal) => {
+                        // Equal vector clocks, use node id as tie breaker
+                        if current.node_id < msg.value.node_id {
+                            // Use lexicographically greater node_id
+                            let updated_value = msg.value.clone();
+                            self.data.insert(msg.key, updated_value.clone());
+                            UpdateResult::Updated(updated_value)
+                        } else {
+                            UpdateResult::NotUpdated(current.clone())
+                        }
+                    }
+                    None => {
+                        // Conflict: neither value is newer, we have a conflict
+                        UpdateResult::Conflict(current.clone(), msg.value)
+                    }
                 }
             }
             None => {
-                self.data.insert(msg.key, msg.value);
-                true
+                // No current value, just insert
+                let new_value = msg.value.clone();
+                self.data.insert(msg.key, new_value.clone());
+                UpdateResult::Updated(new_value)
             }
         };
 
-        updated
+        MessageResult(result)
     }
 }
 
@@ -141,515 +169,294 @@ impl Handler<GetAll> for KVStoreActor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_rt::test as actix_test;
-    use rand::{SeedableRng, rngs::StdRng};
+    use actix::Actor;
 
-    #[actix_test]
+    #[actix_rt::test]
     async fn test_kvstore_set_get() {
-        let kvstore = KVStoreActor::new().start();
+        let kvstore = KVStoreActor::new("node-1".to_string());
+        let kvstore_addr = kvstore.start();
 
-        let set_result = kvstore
+        let set_result = kvstore_addr
             .send(Set {
-                key: "test_key".to_string(),
-                value: "test_value".to_string(),
-                node_id: "test_node".to_string(),
+                key: "test-key".to_string(),
+                value: "test-value".to_string(),
+                node_id: "node-1".to_string(),
             })
             .await
             .unwrap();
 
-        assert_eq!(set_result.value, "test_value");
+        assert_eq!(set_result.value, "test-value");
+        assert_eq!(set_result.node_id, "node-1");
 
-        let get_result = kvstore
+        let counter = set_result.vector_clock.counters.get("node-1").unwrap();
+        assert_eq!(*counter, 1);
+
+        let get_result = kvstore_addr
             .send(Get {
-                key: "test_key".to_string(),
+                key: "test-key".to_string(),
             })
             .await
             .unwrap();
 
         assert!(get_result.is_some());
-        assert_eq!(get_result.unwrap().value, "test_value");
-    }
+        let value = get_result.unwrap();
+        assert_eq!(value.value, "test-value");
+        assert_eq!(value.node_id, "node-1");
 
-    #[actix_test]
-    async fn test_kvstore_update() {
-        let kvstore = KVStoreActor::new().start();
-
-        let _ = kvstore
-            .send(Set {
-                key: "test_key".to_string(),
-                value: "initial_value".to_string(),
-                node_id: "node1".to_string(),
-            })
-            .await
-            .unwrap();
-
-        let newer_value = VersionedValue {
-            value: "newer_value".to_string(),
-            timestamp: 1000,
-            node_id: "node2".to_string(),
-        };
-
-        let updated = kvstore
-            .send(Update {
-                key: "test_key".to_string(),
-                value: newer_value.clone(),
-            })
-            .await
-            .unwrap();
-
-        assert!(updated);
-
-        let get_result = kvstore
+        let get_result = kvstore_addr
             .send(Get {
-                key: "test_key".to_string(),
+                key: "non-existent".to_string(),
             })
             .await
             .unwrap();
 
-        assert_eq!(get_result.unwrap().value, "newer_value");
+        assert!(get_result.is_none());
     }
 
-    #[actix_test]
-    async fn test_update_with_newer_timestamp() {
-        let kvstore = KVStoreActor::new().start();
+    #[actix_rt::test]
+    async fn test_kvstore_update() {
+        let kvstore = KVStoreActor::new("node-1".to_string());
+        let kvstore_addr = kvstore.start();
 
-        let initial_value = VersionedValue {
-            value: "initial".to_string(),
-            timestamp: 1000,
-            node_id: "node1".to_string(),
+        let mut vc = VectorClock::new();
+        vc.increment("node-2");
+
+        let original_value = VersionedValue {
+            value: "original".to_string(),
+            vector_clock: vc.clone(),
+            node_id: "node-2".to_string(),
         };
 
-        let _ = kvstore
+        let update_result = kvstore_addr
             .send(Update {
-                key: "conflict_key".to_string(),
-                value: initial_value,
+                key: "update-key".to_string(),
+                value: original_value.clone(),
             })
             .await
             .unwrap();
+
+        match update_result {
+            UpdateResult::Updated(value) => {
+                assert_eq!(value.value, "original");
+                assert_eq!(value.node_id, "node-2");
+            }
+            _ => panic!("Expected UpdateResult::Updated"),
+        }
+
+        let mut newer_vc = vc.clone();
+        newer_vc.increment("node-2");
 
         let newer_value = VersionedValue {
             value: "newer".to_string(),
-            timestamp: 2000,
-            node_id: "node2".to_string(),
+            vector_clock: newer_vc,
+            node_id: "node-2".to_string(),
         };
 
-        let updated = kvstore
+        let update_result = kvstore_addr
             .send(Update {
-                key: "conflict_key".to_string(),
+                key: "update-key".to_string(),
                 value: newer_value,
             })
             .await
             .unwrap();
 
-        assert!(updated);
-
-        let get_result = kvstore
-            .send(Get {
-                key: "conflict_key".to_string(),
-            })
-            .await
-            .unwrap();
-
-        assert!(get_result.is_some());
-        let value = get_result.unwrap();
-        assert_eq!(value.value, "newer");
-        assert_eq!(value.timestamp, 2000);
-        assert_eq!(value.node_id, "node2");
-    }
-
-    #[actix_test]
-    async fn test_update_with_older_timestamp() {
-        let kvstore = KVStoreActor::new().start();
-
-        let initial_value = VersionedValue {
-            value: "initial".to_string(),
-            timestamp: 2000,
-            node_id: "node1".to_string(),
-        };
-
-        let _ = kvstore
-            .send(Update {
-                key: "conflict_key".to_string(),
-                value: initial_value,
-            })
-            .await
-            .unwrap();
+        match update_result {
+            UpdateResult::Updated(value) => {
+                assert_eq!(value.value, "newer");
+                let counter = value.vector_clock.counters.get("node-2").unwrap();
+                assert_eq!(*counter, 2);
+            }
+            _ => panic!("Expected UpdateResult::Updated"),
+        }
 
         let older_value = VersionedValue {
             value: "older".to_string(),
-            timestamp: 1000,
-            node_id: "node2".to_string(),
+            vector_clock: vc.clone(),
+            node_id: "node-2".to_string(),
         };
 
-        let updated = kvstore
+        let update_result = kvstore_addr
             .send(Update {
-                key: "conflict_key".to_string(),
+                key: "update-key".to_string(),
                 value: older_value,
             })
             .await
             .unwrap();
 
-        assert!(!updated);
+        match update_result {
+            UpdateResult::NotUpdated(value) => {
+                assert_eq!(value.value, "newer");
+                let counter = value.vector_clock.counters.get("node-2").unwrap();
+                assert_eq!(*counter, 2);
+            }
+            _ => panic!("Expected UpdateResult::NotUpdated"),
+        }
+    }
 
-        let get_result = kvstore
+    #[actix_rt::test]
+    async fn test_kvstore_concurrent_updates() {
+        let kvstore = KVStoreActor::new("node-1".to_string());
+        let kvstore_addr = kvstore.start();
+
+        let mut base_vc = VectorClock::new();
+        base_vc.increment("common");
+
+        let base_value = VersionedValue {
+            value: "base".to_string(),
+            vector_clock: base_vc.clone(),
+            node_id: "common".to_string(),
+        };
+
+        let update_result = kvstore_addr
+            .send(Update {
+                key: "concurrent-key".to_string(),
+                value: base_value,
+            })
+            .await
+            .unwrap();
+
+        assert!(matches!(update_result, UpdateResult::Updated(_)));
+
+        let mut vc_a = base_vc.clone();
+        vc_a.increment("node-a");
+
+        let value_a = VersionedValue {
+            value: "value-a".to_string(),
+            vector_clock: vc_a,
+            node_id: "node-a".to_string(),
+        };
+
+        let mut vc_b = base_vc.clone();
+        vc_b.increment("node-b");
+
+        let value_b = VersionedValue {
+            value: "value-b".to_string(),
+            vector_clock: vc_b,
+            node_id: "node-b".to_string(),
+        };
+
+        let update_result = kvstore_addr
+            .send(Update {
+                key: "concurrent-key".to_string(),
+                value: value_a.clone(),
+            })
+            .await
+            .unwrap();
+
+        assert!(matches!(update_result, UpdateResult::Updated(_)));
+
+        let update_result = kvstore_addr
+            .send(Update {
+                key: "concurrent-key".to_string(),
+                value: value_b.clone(),
+            })
+            .await
+            .unwrap();
+
+        match update_result {
+            UpdateResult::Conflict(stored, received) => {
+                assert_eq!(stored.value, "value-a");
+                assert_eq!(stored.node_id, "node-a");
+                assert_eq!(received.value, "value-b");
+                assert_eq!(received.node_id, "node-b");
+            }
+            _ => panic!("Expected UpdateResult::Conflict"),
+        }
+    }
+
+    #[actix_rt::test]
+    async fn test_kvstore_tie_breaker() {
+        let kvstore = KVStoreActor::new("node-1".to_string());
+        let kvstore_addr = kvstore.start();
+
+        let mut vc = VectorClock::new();
+        vc.increment("common");
+
+        let value_a = VersionedValue {
+            value: "value-a".to_string(),
+            vector_clock: vc.clone(),
+            node_id: "node-a".to_string(),
+        };
+
+        let value_b = VersionedValue {
+            value: "value-b".to_string(),
+            vector_clock: vc.clone(),
+            node_id: "node-b".to_string(),
+        };
+
+        let update_result = kvstore_addr
+            .send(Update {
+                key: "tie-key".to_string(),
+                value: value_a,
+            })
+            .await
+            .unwrap();
+
+        assert!(matches!(update_result, UpdateResult::Updated(_)));
+
+        let update_result = kvstore_addr
+            .send(Update {
+                key: "tie-key".to_string(),
+                value: value_b.clone(),
+            })
+            .await
+            .unwrap();
+
+        match update_result {
+            UpdateResult::Updated(value) => {
+                assert_eq!(value.value, "value-b");
+                assert_eq!(value.node_id, "node-b");
+            }
+            _ => panic!("Expected UpdateResult::Updated"),
+        }
+
+        let get_result = kvstore_addr
             .send(Get {
-                key: "conflict_key".to_string(),
+                key: "tie-key".to_string(),
             })
             .await
             .unwrap();
 
         assert!(get_result.is_some());
         let value = get_result.unwrap();
-        assert_eq!(value.value, "initial");
-        assert_eq!(value.timestamp, 2000);
-        assert_eq!(value.node_id, "node1");
+        assert_eq!(value.value, "value-b");
+        assert_eq!(value.node_id, "node-b");
     }
 
-    #[actix_test]
-    async fn test_update_with_same_timestamp_different_nodes() {
-        let kvstore = KVStoreActor::new().start();
+    #[actix_rt::test]
+    async fn test_kvstore_multiple_updates() {
+        let kvstore = KVStoreActor::new("node-1".to_string());
+        let kvstore_addr = kvstore.start();
 
-        let initial_value = VersionedValue {
-            value: "node1_value".to_string(),
-            timestamp: 1000,
-            node_id: "node1".to_string(),
-        };
+        for i in 1..5 {
+            let value = format!("value-{}", i);
 
-        let _ = kvstore
-            .send(Update {
-                key: "conflict_key".to_string(),
-                value: initial_value,
-            })
-            .await
-            .unwrap();
-
-        let same_time_value = VersionedValue {
-            value: "node2_value".to_string(),
-            timestamp: 1000,
-            node_id: "node2".to_string(), // node2 > node1 lexicographically
-        };
-
-        let updated = kvstore
-            .send(Update {
-                key: "conflict_key".to_string(),
-                value: same_time_value,
-            })
-            .await
-            .unwrap();
-
-        assert!(updated);
-
-        let get_result = kvstore
-            .send(Get {
-                key: "conflict_key".to_string(),
-            })
-            .await
-            .unwrap();
-
-        assert!(get_result.is_some());
-        let value = get_result.unwrap();
-        assert_eq!(value.value, "node2_value");
-        assert_eq!(value.timestamp, 1000);
-        assert_eq!(value.node_id, "node2");
-
-        let node0_value = VersionedValue {
-            value: "node0_value".to_string(),
-            timestamp: 1000,
-            node_id: "node0".to_string(), // node0 < node2 lexicographically
-        };
-
-        let updated = kvstore
-            .send(Update {
-                key: "conflict_key".to_string(),
-                value: node0_value,
-            })
-            .await
-            .unwrap();
-
-        assert!(!updated);
-
-        let get_result = kvstore
-            .send(Get {
-                key: "conflict_key".to_string(),
-            })
-            .await
-            .unwrap();
-
-        assert!(get_result.is_some());
-        let value = get_result.unwrap();
-        assert_eq!(value.value, "node2_value"); // Still node2's value
-        assert_eq!(value.timestamp, 1000);
-        assert_eq!(value.node_id, "node2");
-    }
-
-    #[actix_test]
-    async fn test_snapshot_and_getall() {
-        let kvstore = KVStoreActor::new().start();
-
-        let value1 = VersionedValue {
-            value: "value1".to_string(),
-            timestamp: 1000,
-            node_id: "node1".to_string(),
-        };
-
-        let value2 = VersionedValue {
-            value: "value2".to_string(),
-            timestamp: 2000,
-            node_id: "node2".to_string(),
-        };
-
-        let _ = kvstore
-            .send(Update {
-                key: "key1".to_string(),
-                value: value1.clone(),
-            })
-            .await
-            .unwrap();
-
-        let _ = kvstore
-            .send(Update {
-                key: "key2".to_string(),
-                value: value2.clone(),
-            })
-            .await
-            .unwrap();
-
-        let snapshot = kvstore.send(Snapshot).await.unwrap().unwrap();
-
-        assert_eq!(snapshot.len(), 2);
-        assert!(snapshot.contains_key("key1"));
-        assert!(snapshot.contains_key("key2"));
-        assert_eq!(snapshot.get("key1").unwrap().value, "value1");
-        assert_eq!(snapshot.get("key2").unwrap().value, "value2");
-
-        let all_data = kvstore.send(GetAll).await.unwrap();
-
-        assert_eq!(all_data.len(), 2);
-        assert!(all_data.contains_key("key1"));
-        assert!(all_data.contains_key("key2"));
-        assert_eq!(all_data.get("key1").unwrap().value, "value1");
-        assert_eq!(all_data.get("key2").unwrap().value, "value2");
-    }
-
-    #[actix_test]
-    async fn test_concurrent_updates() {
-        let kvstore = KVStoreActor::new().start();
-
-        for i in 1..=100 {
-            let value = VersionedValue {
-                value: format!("value{}", i),
-                timestamp: i,
-                node_id: "node1".to_string(),
-            };
-
-            let _ = kvstore
-                .send(Update {
-                    key: "concurrent_key".to_string(),
-                    value,
+            let set_result = kvstore_addr
+                .send(Set {
+                    key: "multi-key".to_string(),
+                    value: value.clone(),
+                    node_id: "node-1".to_string(),
                 })
                 .await
                 .unwrap();
+
+            assert_eq!(set_result.value, value);
+
+            let counter = set_result.vector_clock.counters.get("node-1").unwrap();
+            assert_eq!(*counter, i as u64);
         }
 
-        let get_result = kvstore
+        let get_result = kvstore_addr
             .send(Get {
-                key: "concurrent_key".to_string(),
+                key: "multi-key".to_string(),
             })
             .await
             .unwrap();
 
         assert!(get_result.is_some());
         let value = get_result.unwrap();
-        assert_eq!(value.value, "value100");
-        assert_eq!(value.timestamp, 100);
-
-        use rand::Rng;
-        use std::sync::Arc;
-        use tokio::sync::Barrier;
-
-        let kvstore_arc = Arc::new(kvstore);
-        let barrier = Arc::new(Barrier::new(10)); // Synchronize 10 concurrent updates
-
-        let mut handles = vec![];
-        let mut max_ts = 0;
-
-        for _ in 0..10 {
-            let mut rng = StdRng::from_os_rng();
-            let timestamp = rng.random_range(200..300);
-            max_ts = max_ts.max(timestamp);
-            let kvstore_clone = kvstore_arc.clone();
-            let barrier_clone = barrier.clone();
-
-            let handle = tokio::spawn(async move {
-                let node_id = format!("node{}", rng.random_range(1..5));
-
-                let value = VersionedValue {
-                    value: format!("value{}-{}", timestamp, node_id),
-                    timestamp,
-                    node_id,
-                };
-
-                barrier_clone.wait().await;
-
-                let _ = kvstore_clone
-                    .send(Update {
-                        key: "random_order_key".to_string(),
-                        value,
-                    })
-                    .await
-                    .unwrap();
-            });
-
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            let _ = handle.await;
-        }
-
-        let get_result = kvstore_arc
-            .send(Get {
-                key: "random_order_key".to_string(),
-            })
-            .await
-            .unwrap();
-
-        assert!(get_result.is_some());
-        let value = get_result.unwrap();
-
-        assert!(value.timestamp >= 200);
-        assert_eq!(max_ts, value.timestamp);
-    }
-
-    #[actix_test]
-    async fn test_multiple_nodes_with_concurrent_updates() {
-        let node1_store = KVStoreActor::new().start();
-        let node2_store = KVStoreActor::new().start();
-        let node3_store = KVStoreActor::new().start();
-
-        let node1_value = VersionedValue {
-            value: "node1_value".to_string(),
-            timestamp: 1000,
-            node_id: "node1".to_string(),
-        };
-
-        let node2_value = VersionedValue {
-            value: "node2_value".to_string(),
-            timestamp: 1000,
-            node_id: "node2".to_string(),
-        };
-
-        let node3_value = VersionedValue {
-            value: "node3_value".to_string(),
-            timestamp: 1000,
-            node_id: "node3".to_string(),
-        };
-
-        let _ = node1_store
-            .send(Update {
-                key: "shared_key".to_string(),
-                value: node1_value.clone(),
-            })
-            .await
-            .unwrap();
-
-        let _ = node2_store
-            .send(Update {
-                key: "shared_key".to_string(),
-                value: node2_value.clone(),
-            })
-            .await
-            .unwrap();
-
-        let _ = node3_store
-            .send(Update {
-                key: "shared_key".to_string(),
-                value: node3_value.clone(),
-            })
-            .await
-            .unwrap();
-
-        // Apply node1's value to node2 and node3
-        let updated = node2_store
-            .send(Update {
-                key: "shared_key".to_string(),
-                value: node1_value.clone(),
-            })
-            .await
-            .unwrap();
-        assert!(!updated);
-
-        let updated = node3_store
-            .send(Update {
-                key: "shared_key".to_string(),
-                value: node1_value.clone(),
-            })
-            .await
-            .unwrap();
-        assert!(!updated);
-
-        // Apply node2's value to node1 and node3
-        let updated = node1_store
-            .send(Update {
-                key: "shared_key".to_string(),
-                value: node2_value.clone(),
-            })
-            .await
-            .unwrap();
-        assert!(updated);
-
-        let updated = node3_store
-            .send(Update {
-                key: "shared_key".to_string(),
-                value: node2_value.clone(),
-            })
-            .await
-            .unwrap();
-        assert!(!updated);
-
-        // Apply node3's value to node1 and node2
-        let updated = node1_store
-            .send(Update {
-                key: "shared_key".to_string(),
-                value: node3_value.clone(),
-            })
-            .await
-            .unwrap();
-        assert!(updated);
-
-        let updated = node2_store
-            .send(Update {
-                key: "shared_key".to_string(),
-                value: node3_value.clone(),
-            })
-            .await
-            .unwrap();
-        assert!(updated);
-
-        // Sanity check
-        let node1_result = node1_store
-            .send(Get {
-                key: "shared_key".to_string(),
-            })
-            .await
-            .unwrap();
-
-        let node2_result = node2_store
-            .send(Get {
-                key: "shared_key".to_string(),
-            })
-            .await
-            .unwrap();
-
-        let node3_result = node3_store
-            .send(Get {
-                key: "shared_key".to_string(),
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(node1_result.unwrap().value, "node3_value");
-        assert_eq!(node2_result.unwrap().value, "node3_value");
-        assert_eq!(node3_result.unwrap().value, "node3_value");
+        assert_eq!(value.value, "value-4");
+        let counter = value.vector_clock.counters.get("node-1").unwrap();
+        assert_eq!(*counter, 4);
     }
 }

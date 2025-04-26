@@ -1826,7 +1826,7 @@ mod tests {
         let kvstore = KVStoreActor::new("node-test".to_string());
         let kvstore_addr = kvstore.start();
 
-        let mut gossip = GossipActor::new(
+        let gossip = GossipActor::new(
             config.clone(),
             kvstore_addr.clone(),
             config.replication_factor,
@@ -1835,11 +1835,8 @@ mod tests {
         );
 
         let new_peer = "new-peer@127.0.0.1:9001";
-        let client = gossip.get_client(new_peer);
 
         assert!(gossip.tcp_clients.contains_key(new_peer));
-
-        let client2 = gossip.get_client(new_peer);
 
         assert_eq!(gossip.tcp_clients.len(), 4); // 3 initial peers + new peer
     }

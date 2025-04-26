@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::gossip::actor::{GetActivePeers, GossipActor, ProcessGossip, QuorumRead, QuorumWrite};
 use crate::gossip::{GossipCommand, GossipMessage, GossipResponse, GossipResponseData};
-use crate::kvstore::KVStoreActor;
 
 use actix::Addr;
 use anyhow::{Result, anyhow};
@@ -27,7 +26,6 @@ pub fn create_shutdown_channel() -> (
 // TCP server that handles gossip protocol
 pub struct GossipTcpServer {
     config: Config,
-    kvstore: Addr<KVStoreActor>,
     gossip: Addr<GossipActor>,
     shutdown: Option<tokio::sync::broadcast::Receiver<()>>,
 }
@@ -35,13 +33,11 @@ pub struct GossipTcpServer {
 impl GossipTcpServer {
     pub fn new(
         config: Config,
-        kvstore: Addr<KVStoreActor>,
         gossip: Addr<GossipActor>,
         shutdown: Option<tokio::sync::broadcast::Receiver<()>>,
     ) -> Self {
         Self {
             config,
-            kvstore,
             gossip,
             shutdown,
         }
@@ -81,9 +77,7 @@ impl GossipTcpServer {
 
                 tracing::info!("Connection accepted from {}", peer_addr);
 
-                let kvstore = self.kvstore.clone();
                 let gossip = self.gossip.clone();
-                let config = self.config.clone();
                 let connections_clone = connections.clone();
 
                 let connection_shutdown = if let Some(ref shutdown) = shutdown_receiver {
@@ -99,8 +93,7 @@ impl GossipTcpServer {
                     }
 
                     if let Err(e) =
-                        handle_connection(socket, kvstore, gossip, config, connection_shutdown)
-                            .await
+                        handle_connection(socket, gossip, connection_shutdown).await
                     {
                         tracing::error!("Error handling connection from {}: {}", peer_addr, e);
                     }
@@ -253,9 +246,7 @@ impl Clone for GossipTcpClient {
 // Handle a client connection
 async fn handle_connection(
     mut socket: TcpStream,
-    kvstore: Addr<KVStoreActor>,
     gossip: Addr<GossipActor>,
-    config: Config,
     mut shutdown: Option<tokio::sync::broadcast::Receiver<()>>,
 ) -> Result<()> {
     let (mut reader, mut writer) = socket.split();
@@ -315,7 +306,7 @@ async fn handle_connection(
                 }
             };
 
-            let response = process_command(command, &gossip, &config).await;
+            let response = process_command(command, &gossip).await;
 
             send_response(&mut writer, &response).await?;
         }
@@ -339,11 +330,7 @@ async fn send_response(
 }
 
 // Process a command and generate a response
-async fn process_command(
-    command: GossipCommand,
-    gossip: &Addr<GossipActor>,
-    config: &Config,
-) -> GossipResponse {
+async fn process_command(command: GossipCommand, gossip: &Addr<GossipActor>) -> GossipResponse {
     match command {
         GossipCommand::Gossip(message) => match gossip.send(ProcessGossip { message }).await {
             Ok(Ok(response)) => {
@@ -501,12 +488,7 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = create_shutdown_channel();
 
-        let server = GossipTcpServer::new(
-            config.clone(),
-            kvstore_addr.clone(),
-            gossip_addr.clone(),
-            Some(shutdown_rx),
-        );
+        let server = GossipTcpServer::new(config.clone(), gossip_addr.clone(), Some(shutdown_rx));
 
         let server_handle = tokio::spawn(async move {
             let _ = server.run().await;
@@ -550,7 +532,6 @@ mod tests {
 
         let server = GossipTcpServer::new(
             server_config.clone(),
-            kvstore_addr.clone(),
             gossip_addr.clone(),
             Some(shutdown_rx),
         );
@@ -607,7 +588,6 @@ mod tests {
 
         let server = GossipTcpServer::new(
             server_config.clone(),
-            kvstore_addr.clone(),
             gossip_addr.clone(),
             Some(shutdown_rx),
         );
@@ -699,7 +679,6 @@ mod tests {
 
         let server = GossipTcpServer::new(
             server_config.clone(),
-            kvstore_addr.clone(),
             gossip_addr.clone(),
             Some(shutdown_rx),
         );
@@ -792,7 +771,6 @@ mod tests {
 
         let server = GossipTcpServer::new(
             server_config.clone(),
-            kvstore_addr.clone(),
             gossip_addr.clone(),
             Some(shutdown_rx),
         );
@@ -848,7 +826,6 @@ mod tests {
 
         let server = GossipTcpServer::new(
             server_config.clone(),
-            kvstore_addr.clone(),
             gossip_addr.clone(),
             Some(shutdown_rx),
         );
@@ -888,7 +865,6 @@ mod tests {
 
         let server = GossipTcpServer::new(
             server_config.clone(),
-            kvstore_addr.clone(),
             gossip_addr.clone(),
             Some(shutdown_rx),
         );
@@ -934,7 +910,6 @@ mod tests {
 
         let server = GossipTcpServer::new(
             server_config.clone(),
-            kvstore_addr.clone(),
             gossip_addr.clone(),
             Some(shutdown_rx),
         );
@@ -1000,7 +975,6 @@ mod tests {
 
         let server = GossipTcpServer::new(
             server_config.clone(),
-            kvstore_addr.clone(),
             gossip_addr.clone(),
             Some(shutdown_rx),
         );

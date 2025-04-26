@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
         );
         let gossip_addr = gossip.start();
 
-        let server = NetworkServer::new(config.clone(), kvstore_addr.clone(), gossip_addr.clone());
+        let server = NetworkServer::new(config.clone(), gossip_addr.clone());
 
         if let Some(shutdown_handle) = server.get_shutdown_handle() {
             shutdown_handles.push(shutdown_handle);

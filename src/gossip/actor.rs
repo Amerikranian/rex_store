@@ -83,11 +83,6 @@ pub struct QuorumWriteResult {
 
 #[derive(Clone, Debug)]
 struct PendingQuorumOperation {
-    request_id: String,
-    key: String,
-    successful_reads: Vec<VersionedValue>,
-    successful_writes: Vec<String>,
-    failed_nodes: Vec<String>,
     created_at: Instant,
 }
 
@@ -186,51 +181,6 @@ impl GossipActor {
     // Get replica nodes for a key
     fn get_replicas_for_key(&self, key: &str) -> Vec<RingNode> {
         self.hash_ring.get_nodes_for_key(key)
-    }
-
-    // Handle a quorum read response message
-    async fn handle_quorum_read_response(
-        &mut self,
-        key: String,
-        value: Option<VersionedValue>,
-        request_id: String,
-        node_id: String,
-    ) -> Result<()> {
-        if let Some(op) = self.pending_quorum_ops.get_mut(&request_id) {
-            if value.is_some() {
-                op.successful_reads.push(value.unwrap());
-            } else {
-                op.failed_nodes.push(node_id);
-            }
-        }
-        Ok(())
-    }
-
-    // Handle a quorum write response message
-    async fn handle_quorum_write_response(
-        &mut self,
-        key: String,
-        success: bool,
-        request_id: String,
-        node_id: String,
-    ) -> Result<()> {
-        if let Some(op) = self.pending_quorum_ops.get_mut(&request_id) {
-            if success {
-                op.successful_writes.push(node_id);
-            } else {
-                op.failed_nodes.push(node_id);
-            }
-        }
-        Ok(())
-    }
-
-    // Merge vector clocks from multiple versioned values
-    fn merge_vector_clocks(&self, values: &[VersionedValue]) -> VectorClock {
-        let mut merged = VectorClock::new();
-        for val in values {
-            merged.merge(&val.vector_clock);
-        }
-        merged
     }
 
     fn check_inactive_peers(&mut self, ctx: &mut Context<Self>) {
@@ -437,10 +387,10 @@ impl Handler<ProcessGossip> for GossipActor {
                     }
 
                     GossipMessage::QuorumReadResponse {
-                        key,
-                        value,
-                        request_id,
-                        node_id,
+                        key: _,
+                        value: _,
+                        request_id: _,
+                        node_id: _,
                     } => Ok(GossipMessage::Ping),
 
                     GossipMessage::QuorumWrite {
@@ -472,11 +422,11 @@ impl Handler<ProcessGossip> for GossipActor {
                     }
 
                     GossipMessage::QuorumWriteResponse {
-                        key,
-                        success,
+                        key: _,
+                        success: _,
                         value: _,
-                        request_id,
-                        node_id,
+                        request_id: _,
+                        node_id: _,
                     } => Ok(GossipMessage::Ping),
 
                     GossipMessage::ConflictResolution {
@@ -574,7 +524,7 @@ impl Handler<QuorumRead> for GossipActor {
     fn handle(&mut self, msg: QuorumRead, _ctx: &mut Context<Self>) -> Self::Result {
         let key = msg.key.clone();
         let replicas = self.get_replicas_for_key(&key);
-        let (_, mut read_quorum, _) = self.hash_ring.get_quorum_settings();
+        let (_, read_quorum, _) = self.hash_ring.get_quorum_settings();
         let config = self.config.clone();
         let kvstore = self.kvstore.clone();
 
@@ -583,11 +533,6 @@ impl Handler<QuorumRead> for GossipActor {
         self.pending_quorum_ops.insert(
             request_id.clone(),
             PendingQuorumOperation {
-                request_id: request_id.clone(),
-                key: key.clone(),
-                successful_reads: Vec::new(),
-                successful_writes: Vec::new(),
-                failed_nodes: Vec::new(),
                 created_at: Instant::now(),
             },
         );
@@ -622,7 +567,7 @@ impl Handler<QuorumRead> for GossipActor {
                         Ok(GossipMessage::QuorumReadResponse {
                             key,
                             value,
-                            request_id,
+                            request_id: _,
                             node_id,
                         }) => (node_id, key, value, true),
                         _ => (node_id, key, None, false),
@@ -724,11 +669,6 @@ impl Handler<QuorumWrite> for GossipActor {
         self.pending_quorum_ops.insert(
             request_id.clone(),
             PendingQuorumOperation {
-                request_id: request_id.clone(),
-                key: key.clone(),
-                successful_reads: Vec::new(),
-                successful_writes: Vec::new(),
-                failed_nodes: Vec::new(),
                 created_at: Instant::now(),
             },
         );
@@ -1461,122 +1401,6 @@ mod tests {
     }
 
     #[actix_rt::test]
-    async fn test_handle_quorum_read_response() {
-        let config = create_test_config("node-test", 8011);
-        let kvstore = KVStoreActor::new("node-test".to_string());
-        let kvstore_addr = kvstore.start();
-
-        let mut gossip = GossipActor::new(
-            config.clone(),
-            kvstore_addr.clone(),
-            config.replication_factor,
-            config.read_quorum,
-            config.write_quorum,
-        );
-
-        let request_id = "test-request".to_string();
-        gossip.pending_quorum_ops.insert(
-            request_id.clone(),
-            PendingQuorumOperation {
-                request_id: request_id.clone(),
-                key: "test-key".to_string(),
-                successful_reads: Vec::new(),
-                successful_writes: Vec::new(),
-                failed_nodes: Vec::new(),
-                created_at: Instant::now(),
-            },
-        );
-
-        let mut vc = VectorClock::new();
-        vc.increment("test-node");
-
-        let value = VersionedValue {
-            value: "test-value".to_string(),
-            vector_clock: vc,
-            node_id: "test-node".to_string(),
-        };
-
-        let _ = gossip
-            .handle_quorum_read_response(
-                "test-key".to_string(),
-                Some(value),
-                request_id.clone(),
-                "test-node".to_string(),
-            )
-            .await;
-
-        let op = gossip.pending_quorum_ops.get(&request_id).unwrap();
-        assert_eq!(op.successful_reads.len(), 1);
-
-        let _ = gossip
-            .handle_quorum_read_response(
-                "test-key".to_string(),
-                None,
-                request_id.clone(),
-                "failed-node".to_string(),
-            )
-            .await;
-
-        let op = gossip.pending_quorum_ops.get(&request_id).unwrap();
-        assert_eq!(op.failed_nodes.len(), 1);
-        assert_eq!(op.failed_nodes[0], "failed-node");
-    }
-
-    #[actix_rt::test]
-    async fn test_handle_quorum_write_response() {
-        let config = create_test_config("node-test", 8012);
-        let kvstore = KVStoreActor::new("node-test".to_string());
-        let kvstore_addr = kvstore.start();
-
-        let mut gossip = GossipActor::new(
-            config.clone(),
-            kvstore_addr.clone(),
-            config.replication_factor,
-            config.read_quorum,
-            config.write_quorum,
-        );
-
-        let request_id = "test-request".to_string();
-        gossip.pending_quorum_ops.insert(
-            request_id.clone(),
-            PendingQuorumOperation {
-                request_id: request_id.clone(),
-                key: "test-key".to_string(),
-                successful_reads: Vec::new(),
-                successful_writes: Vec::new(),
-                failed_nodes: Vec::new(),
-                created_at: Instant::now(),
-            },
-        );
-
-        let _ = gossip
-            .handle_quorum_write_response(
-                "test-key".to_string(),
-                true,
-                request_id.clone(),
-                "success-node".to_string(),
-            )
-            .await;
-
-        let op = gossip.pending_quorum_ops.get(&request_id).unwrap();
-        assert_eq!(op.successful_writes.len(), 1);
-        assert_eq!(op.successful_writes[0], "success-node");
-
-        let _ = gossip
-            .handle_quorum_write_response(
-                "test-key".to_string(),
-                false,
-                request_id.clone(),
-                "failed-node".to_string(),
-            )
-            .await;
-
-        let op = gossip.pending_quorum_ops.get(&request_id).unwrap();
-        assert_eq!(op.failed_nodes.len(), 1);
-        assert_eq!(op.failed_nodes[0], "failed-node");
-    }
-
-    #[actix_rt::test]
     async fn test_cleanup_pending_operations() {
         let config = create_test_config("node-test", 8013);
         let kvstore = KVStoreActor::new("node-test".to_string());
@@ -1594,11 +1418,6 @@ mod tests {
         gossip.pending_quorum_ops.insert(
             old_request_id.clone(),
             PendingQuorumOperation {
-                request_id: old_request_id.clone(),
-                key: "test-key".to_string(),
-                successful_reads: Vec::new(),
-                successful_writes: Vec::new(),
-                failed_nodes: Vec::new(),
                 created_at: Instant::now() - Duration::from_secs(31), // 31 seconds old (expired)
             },
         );
@@ -1607,11 +1426,6 @@ mod tests {
         gossip.pending_quorum_ops.insert(
             new_request_id.clone(),
             PendingQuorumOperation {
-                request_id: new_request_id.clone(),
-                key: "test-key".to_string(),
-                successful_reads: Vec::new(),
-                successful_writes: Vec::new(),
-                failed_nodes: Vec::new(),
                 created_at: Instant::now() - Duration::from_secs(5), // 5 seconds old (not expired)
             },
         );
@@ -1620,54 +1434,6 @@ mod tests {
 
         assert!(!gossip.pending_quorum_ops.contains_key(&old_request_id));
         assert!(gossip.pending_quorum_ops.contains_key(&new_request_id));
-    }
-
-    #[actix_rt::test]
-    async fn test_merge_vector_clocks() {
-        let config = create_test_config("node-test", 8014);
-        let kvstore = KVStoreActor::new("node-test".to_string());
-        let kvstore_addr = kvstore.start();
-
-        let gossip = GossipActor::new(
-            config.clone(),
-            kvstore_addr.clone(),
-            config.replication_factor,
-            config.read_quorum,
-            config.write_quorum,
-        );
-
-        let mut vc1 = VectorClock::new();
-        vc1.increment("node1");
-        let value1 = VersionedValue {
-            value: "value1".to_string(),
-            vector_clock: vc1,
-            node_id: "node1".to_string(),
-        };
-
-        let mut vc2 = VectorClock::new();
-        vc2.increment("node2");
-        vc2.increment("node2");
-        let value2 = VersionedValue {
-            value: "value2".to_string(),
-            vector_clock: vc2,
-            node_id: "node2".to_string(),
-        };
-
-        let mut vc3 = VectorClock::new();
-        vc3.increment("node3");
-        vc3.increment("node1");
-        let value3 = VersionedValue {
-            value: "value3".to_string(),
-            vector_clock: vc3,
-            node_id: "node3".to_string(),
-        };
-
-        let values = vec![value1, value2, value3];
-        let merged = gossip.merge_vector_clocks(&values);
-
-        assert_eq!(*merged.counters.get("node1").unwrap(), 1);
-        assert_eq!(*merged.counters.get("node2").unwrap(), 2);
-        assert_eq!(*merged.counters.get("node3").unwrap(), 1);
     }
 
     #[actix_rt::test]

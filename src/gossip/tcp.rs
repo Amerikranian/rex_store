@@ -92,9 +92,7 @@ impl GossipTcpServer {
                         conns.insert(peer_addr, ());
                     }
 
-                    if let Err(e) =
-                        handle_connection(socket, gossip, connection_shutdown).await
-                    {
+                    if let Err(e) = handle_connection(socket, gossip, connection_shutdown).await {
                         tracing::error!("Error handling connection from {}: {}", peer_addr, e);
                     }
 

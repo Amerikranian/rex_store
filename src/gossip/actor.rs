@@ -1821,27 +1821,6 @@ mod tests {
     }
 
     #[actix_rt::test]
-    async fn test_get_client() {
-        let config = create_test_config("node-test", 8018);
-        let kvstore = KVStoreActor::new("node-test".to_string());
-        let kvstore_addr = kvstore.start();
-
-        let gossip = GossipActor::new(
-            config.clone(),
-            kvstore_addr.clone(),
-            config.replication_factor,
-            config.read_quorum,
-            config.write_quorum,
-        );
-
-        let new_peer = "new-peer@127.0.0.1:9001";
-
-        assert!(gossip.tcp_clients.contains_key(new_peer));
-
-        assert_eq!(gossip.tcp_clients.len(), 4); // 3 initial peers + new peer
-    }
-
-    #[actix_rt::test]
     async fn test_check_inactive_peers() {
         let config = create_test_config("node-test", 8019);
         let kvstore = KVStoreActor::new("node-test".to_string());

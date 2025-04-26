@@ -39,3 +39,15 @@ If you want to see tests, the standard command should work:
 ```bash
 cargo test
 ```
+
+
+## Dependencies
+We use [hwloc2](https://crates.io/crates/hwloc2). Run something like
+```bash
+sudo apt install libhwloc-dev
+```
+if you're on Linux. If you're on Mac, try and do it from brew:
+```bash
+brew install hwloc
+```
+If you're on Windows, please use WSL, as building the library is far from trivial. Note that the system will still work if it could not find hwloc, but the core pinning will not necessarily be accurate, I.e, one logical node per one physical core.

@@ -131,7 +131,11 @@ impl GossipTcpClient {
     async fn ensure_connected(&self) -> Result<()> {
         let mut conn = self.connection.lock().await;
         if conn.is_none() {
-            *conn = Some(TcpStream::connect(&self.peer).await?);
+            let socket = TcpStream::connect(&self.peer).await?;
+
+            socket.set_nodelay(true)?;
+
+            *conn = Some(socket);
         }
         Ok(())
     }

@@ -114,7 +114,7 @@ fn main() -> Result<()> {
         let args_clone = args.clone();
 
         let handle = thread::spawn(move || {
-            core_affinity::set_for_current(core_id);
+            //core_affinity::set_for_current(core_id);
 
             actix_rt::System::new().block_on(async move {
                 tracing::info!(
